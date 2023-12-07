@@ -56,15 +56,28 @@ extern uint8_t u_buf[];
 #endif
 
 static struct index {
+    /* hard sector number */
+    volatile unsigned int hsector;
     /* Main code can reset this at will. */
     volatile unsigned int count;
     /* For synchronising index pulse reporting to the RDATA flux stream. */
     volatile unsigned int rdata_cnt;
+    
+    /* used by hard sector */
+    int short_pulse;
+
+    time_t last_index;
     /* Last time at which ISR fired. */
     time_t isr_time;
     /* Timer structure for index_timer() calls. */
     struct timer timer;
 } index;
+
+#define HARDSECTOR_MODE_DIS   0   /* disabled */
+#define HARDSECTOR_MODE_16    1   /* 16 hard-sector mode */
+
+/* hardsector mode active (automatic) */
+static int hardsector_mode = HARDSECTOR_MODE_DIS;
 
 /* Timer to clean up stale index.isr_time. */
 #define INDEX_TIMER_PERIOD time_ms(5000)
@@ -220,6 +233,7 @@ static uint8_t drive_motor(uint8_t nr, bool_t on)
             return ACK_OKAY;
         pin = 16;
         break;
+        
     default:
         return ACK_NO_BUS;
     }
@@ -630,6 +644,7 @@ static void floppy_end_command(void *ack, unsigned int ack_len)
  */
 
 static struct {
+    unsigned int nr_hsector;      /* hardsector addition */
     unsigned int nr_index;
     unsigned int max_index;
     uint32_t max_index_linger;
@@ -662,7 +677,7 @@ static void rdata_encode_flux(void)
          * the just-completed revolution. */
         read.nr_index = index.count;
         ticks = (timcnt_t)(index.rdata_cnt - prev);
-        IRQ_global_enable(); /* we're done reading ISR variables */
+//        IRQ_global_enable(); /* we're done reading ISR variables */
         u_buf[U_MASK(u_prod++)] = 0xff;
         u_buf[U_MASK(u_prod++)] = FLUXOP_INDEX;
         _write_28bit(ticks);
@@ -671,7 +686,19 @@ static void rdata_encode_flux(void)
         watchdog_kick();
     }
 
+    if (read.nr_hsector != index.hsector) {
+        /* We have just passed the sector mark */
+        read.nr_hsector = index.hsector;
+        ticks = (timcnt_t)(index.rdata_cnt - prev);
+//        IRQ_global_enable(); /* we're done reading ISR variables */
+        u_buf[U_MASK(u_prod++)] = 0xff;
+        u_buf[U_MASK(u_prod++)] = FLUXOP_SECTOR;
+        _write_28bit(ticks);
+    }
+
     IRQ_global_enable();
+
+
 
     /* Process the flux timings into the raw bitcell buffer. */
     for (; cons != prod; cons = (cons+1) & buf_mask) {
@@ -1750,6 +1777,8 @@ const struct usb_class_ops usb_cdc_acm_ops = {
     .configure = floppy_configure
 };
 
+/* ------------------------------------------------------------------------------------------------------------------ */
+
 /*
  * INTERRUPT HANDLERS
  */
@@ -1766,6 +1795,38 @@ static void IRQ_INDEX_changed(void)
     if (time_diff(prev, now) < time_us(50))
         return;
 
+    /* enable hardsector_mode if index holes are less than 25 ms */
+    if (hardsector_mode == HARDSECTOR_MODE_DIS && time_diff(prev, now) < time_ms(25))
+    {
+       hardsector_mode = HARDSECTOR_MODE_16;
+       index.short_pulse = 0;
+       index.hsector = 0;
+    }
+
+    /* index for 16 hard-sectors disk  */
+    /* 12.50 +/- 0.65 ms  -> sector */
+    /*  6.25 +/- 0.325 ms -> index */
+    if (hardsector_mode == HARDSECTOR_MODE_16)
+    {
+        /* sector holes ? */
+        if (time_diff(prev, now) > time_ms(7) || index.short_pulse == 1)
+        {
+          /* previous hole was an index hole ! -> reset hard sector counter */
+          if (index.short_pulse == 1)
+          {
+            index.hsector = 0;
+            index.short_pulse = 0;          
+          }
+          else
+          {
+            index.hsector++;
+          }
+          index.rdata_cnt = cnt;
+          return;
+        }
+        /* index or sector holes ? */
+        index.short_pulse = 1;
+    }
     index.count++;
     index.rdata_cnt = cnt;
 }

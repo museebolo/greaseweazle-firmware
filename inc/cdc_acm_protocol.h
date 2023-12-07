@@ -90,7 +90,6 @@
 #define BUS_SHUGART         2
 /*#define BUS_APPLE2        3*/ /* reserved for Adafruit_Floppy */
 
-
 /*
  * ACK RETURN CODES
  */
@@ -145,6 +144,15 @@
  *  Generate regular flux transitions at specified astable period. 
  *  Duration is specified by immediately preceding FLUXOP_SPACE opcode(s). */
 #define FLUXOP_ASTABLE    3
+
+/* HARDSECTOR addition */
+/* FLUXOP_SECTOR [CMD_READ_FLUX]
+ *  Args:
+ *   +4 [N28]: ticks to sector hole, relative to sample cursor.
+ *  Signals an index pulse in the read stream. Sample cursor is unaffected. */
+#define FLUXOP_SECTOR     4
+
+
 
 
 /*
